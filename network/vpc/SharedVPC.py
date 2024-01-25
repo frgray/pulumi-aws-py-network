@@ -4,21 +4,25 @@ from pulumi import ComponentResource, ResourceOptions, export
 from ipaddress import IPv4Network
 from sortedcontainers import SortedList
 
-from Subnet import Subnet, SubnetArgs, create_subnet
-from NatGateway import NatGateway, NatGatewayArgs
+from network.vpc.Subnet import Subnet, SubnetArgs, create_subnet
+from network.vpc.NatGateway import NatGateway, NatGatewayArgs
 
 
+PKG_REGISTRATION = "frgray:net:SharedVPC"
 
-PKG_REGISTRATION='frgray:net:SharedVPC'
 
 class SharedVPCArgs(object):
-    def __init__(self,
-                 name: str,
-                 availability_zones: list,
-                 cidr_block: str = "10.10.0.0/16",
-                 dns_hostnames: bool = True,
-                 dns_support: bool = True) -> None:
-        assert len(availability_zones) == 3, "You MUST provide 3 Availability Zone names"
+    def __init__(
+        self,
+        name: str,
+        availability_zones: list,
+        cidr_block: str = "10.10.0.0/16",
+        dns_hostnames: bool = True,
+        dns_support: bool = True,
+    ) -> None:
+        assert (
+            len(availability_zones) == 3
+        ), "You MUST provide 3 Availability Zone names"
         self.name = name
         self.availability_zones = availability_zones
         self.cidr_block = cidr_block
@@ -27,112 +31,119 @@ class SharedVPCArgs(object):
 
 
 class SharedVPC(ComponentResource):
-    def __init__(self,
-                 name: str,
-                 args: SharedVPCArgs,
-                 opts: ResourceOptions = None) -> None:
-        
+    def __init__(
+        self, name: str, args: SharedVPCArgs, opts: ResourceOptions = None
+    ) -> None:
         super().__init__(PKG_REGISTRATION, name, {}, opts)
-        self.name = args.vpc_name
+        self.name = args.name
+        self.availability_zones = SortedList(set(args.availability_zones))
         self.cidr_block = args.cidr_block
         self.dns_hostnames = args.dns_hostnames
         self.dns_support = args.dns_support
-        self.availability_zones = SortedList(set(args.availability_zones))
+        self.ip_network = IPv4Network(args.cidr_block)
 
-        # self.region = aws.get_region()
         self.create_vpc()
         self.create_igw()
-        self.subnets = self.create_subnets()
-        self.ip_network = IPv4Network(args.cidr_block)
-        self.route_tables = self.create_route_tables()
+        self.create_subnets()
+        self.create_nat_gateways()
+        self.create_route_tables()
 
     def create_vpc(self) -> None:
         self.vpc = aws.ec2.Vpc(
-            self.vpc_name,
+            self.name,
             cidr_block=self.cidr_block,
             enable_dns_hostnames=self.dns_hostnames,
             enable_dns_support=self.dns_support,
-            tags={
-                'Name': self.vpc_name
-            },
-            opts=ResourceOptions(parent=self)
+            tags={"Name": self.name},
+            opts=ResourceOptions(parent=self),
         )
 
     def create_igw(self) -> None:
-        self.internet_gateway = {
-            "default": aws.ec2.InternetGateway(vpc_id = self.vpc.id, 
-                                               tags={"Name": f'{self.vpc_name}-igw'}
-                                               )
-        }
-        
-    def create_nat_gateways(self) -> None:
-        self.nat_gateways = {
-            self.availability_zones[0]: create_subnet(name=f'{self.name}-nat-{self.availability_zones[0]}', 
-                                                       cidr_block=self.ip_network[0],
-                                                       availability_zone=self.availability_zones[0]),
-
-            self.availability_zones[1]: create_subnet(name=f'{self.name}-nat-{self.availability_zones[1]}', 
-                                                       cidr_block=self.ip_network[1],
-                                                       availability_zone=self.availability_zones[1]),
-                                                       
-            self.availability_zones[2]: create_subnet(name=f'{self.name}-nat-{self.availability_zones[2]}', 
-                                                       cidr_block=self.ip_network[2],
-                                                       availability_zone=self.availability_zones[2])
-        }
+        self.internet_gateway = aws.ec2.InternetGateway(
+            f"{self.name}-igw", vpc_id=self.vpc.id, tags={"Name": f"{self.name}-igw"}
+        )
 
     def create_nat_gateways(self) -> None:
-        pass
+        self.nat_gateways = {}
+        for index in self.subnets["public"]:
+            subnet = self.subnets["public"][index]
+            nat_gw = NatGateway(
+                f"{self.name}-nat-{subnet.availability_zone}",
+                args=NatGatewayArgs(
+                    f"{self.name}-nat-{subnet.availability_zone}",
+                    availability_zone=subnet.availability_zone,
+                    subnet_id=subnet.id,
+                ),
+            )
+
+            self.nat_gateways[subnet.availability_zone] = nat_gw
 
     def create_route_tables(self) -> {}:
-        public = aws.ec2.route_table(vpc_id = self.vpc.id,
-                                     routes=[
-                                         aws.ec2.RouteTableRouteArgs(
-                                             cidr_block="0.0.0.0/0",
-                                             gateway_id=self.internet_gateway.id
-                                         )
-                                     ],
-                                     tags={"Name": f'{self.vpc_name}-public'})
-        nat_az_a = aws.ec2.route_table(vpc_id = self.vpc.id,
-                                        routes=[
-                                            aws.ec2.RouteTableRouteArgs(
-                                                cidr_block="0.0.0.0/0",
-                                                nat_gateway_id=self.nat_gateways
-                                            )
-                                        ],
-                                        tags={"Name": f'{self.vpc_name}-public'})
-        nat_az_b = ""
-        nat_az_c = ""
+        self.route_tables = {
+            "public": aws.ec2.RouteTable(
+                f"{self.name}-public",
+                vpc_id=self.vpc.id,
+                routes=[
+                    aws.ec2.RouteTableRouteArgs(
+                        cidr_block="0.0.0.0/0", gateway_id=self.internet_gateway.id
+                    )
+                ],
+                tags={"Name": f'{self.name}-public'},
+            ),
+            "private": {},
+        }
 
-    def create_subnets(self) -> {}:
+        for az in self.availability_zones:
+            private = aws.ec2.RouteTable(
+                f'{self.name}-private-{az}',
+                vpc_id=self.vpc.id,
+                routes=[
+                    aws.ec2.RouteTableRouteArgs(
+                        cidr_block="0.0.0.0/0", nat_gateway_id=self.nat_gateways[az].id
+                    )
+                ],
+                tags={"Name": f'{self.name}-private-{az}'},
+            )
+            self.route_tables["private"][az] = private
+
+    def create_subnets(self) -> None:
         self.subnets = {
             "private": self.create_private_subnets(),
-            "public": self.create_public_subnets()
+            "public": self.create_public_subnets(),
         }
-        
+
     def create_public_subnets(self) -> {}:
-        aws.ec2.Subnet("foo", 
-                       vpc_id=self.vpc.id,
-                       cidr_block="",
-                       availability_zone=azs[0]
-                       tags={}
-                       )
-        pass
-
-
+        subnets = {}
+        for index in range(len(self.availability_zones)):
+            networks = list(self.ip_network.subnets(prefixlen_diff=3))
+            if index == 0:
+                cidr_block = str(networks[-1])
+            else:
+                cidr_block = str(networks[-(index + 1)])
+            print(f"Public CIDR block: {cidr_block}")
+            subnets[self.availability_zones[index]] = create_subnet(
+                name=f"{self.name}-public-{self.availability_zones[index]}",
+                cidr_block=cidr_block,
+                availability_zone=self.availability_zones[index],
+                vpc_id=self.vpc.id,
+                tags={"Name": f"{self.name}-public-{self.availability_zones[index]}"},
+            )
+        return subnets
 
     def create_private_subnets(self) -> None:
-        aws.ec2.Subnet(args.name,
-                       vpc_id=args.vpc_id,
-                       cidr_block=args.cidr_block,
-                       customer_owned_ipv4_pool=False,
-                       ipv6_native=False,
-                       enable_dns64=False,
-                       assign_ipv6_address_on_creation=False,
-                       tags=args.tags
-                       )    
-    
+        subnets = {}
+        for index in range(len(self.availability_zones)):
+            networks = list(self.ip_network.subnets(prefixlen_diff=3))
+            cidr_block = str(networks[index])
+            print(f"Private CIDR block: {cidr_block}")
+            subnets[self.availability_zones[index]] = create_subnet(
+                name=f"{self.name}-private-{self.availability_zones[index]}",
+                cidr_block=cidr_block,
+                availability_zone=self.availability_zones[index],
+                vpc_id=self.vpc.id,
+                tags={"Name": f"{self.name}-private-{self.availability_zones[index]}"},
+            )
+        return subnets
 
-    def create_route_tables(self) -> {}:
-        pass
 
-export('SharedVPC', SharedVPC)
+export("SharedVPC", SharedVPC)

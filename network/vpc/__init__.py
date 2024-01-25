@@ -1,3 +1,3 @@
-from SharedVPC import SharedVPC, SharedVPCArgs
+from network.vpc.SharedVPC import SharedVPC, SharedVPCArgs
 
 __all__ = [SharedVPC, SharedVPCArgs]
