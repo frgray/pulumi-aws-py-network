@@ -33,6 +33,7 @@ class SharedVPC(ComponentResource):
         self._create_subnets()
         self._create_nat_gateways()
         self._create_route_tables()
+        self._update_route_tables()
 
         self.register_outputs({})
 
@@ -144,12 +145,23 @@ class SharedVPC(ComponentResource):
             )
         return subnets
 
-    def _update_private_route_tables(self) -> None:
-        for index in self.subnets["private"]:
-            subnet = self.subnets["private"][index]
-            route_table = self.route_tables["private"][subnet.availability_zone]
+    def _update_route_tables(self) -> None:
+        for az in self.subnets["public"]:
+            subnet = self.subnets["public"][az]
+            route_table = self.route_tables["public"]
             aws.ec2.RouteTableAssociation(
-                f"rtb-{subnet.id}",
+                f"rtb-{az}-public",
+                subnet_id=subnet.id,
+                route_table_id=route_table.id,
+                opts=ResourceOptions(parent=self, depends_on=[subnet, route_table]),
+            )
+
+        for az in self.subnets["private"]:
+            print(f'AZ: {az}')
+            subnet = self.subnets["private"][az]
+            route_table = self.route_tables["private"][az]
+            aws.ec2.RouteTableAssociation(
+                f"rtb-{az}-private",
                 subnet_id=subnet.id,
                 route_table_id=route_table.id,
                 opts=ResourceOptions(parent=self, depends_on=[subnet, route_table]),
