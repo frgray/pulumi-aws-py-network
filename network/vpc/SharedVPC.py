@@ -16,7 +16,7 @@ class SharedVPC(ComponentResource):
         dns_hostnames: bool = True,
         dns_support: bool = True,
         cidr_block: str = "10.10.10.0/24",
-        tags: dict = {},
+        tags_all: dict = {},
         opts: ResourceOptions = None,
     ) -> None:
         super().__init__(PKG_REGISTRATION, name, {}, opts)
@@ -26,7 +26,7 @@ class SharedVPC(ComponentResource):
         self.dns_hostnames = dns_hostnames
         self.dns_support = dns_support
         self.ip_network = IPv4Network(cidr_block)
-        self.tags = tags
+        self.tags_all = tags_all
 
         self._create_vpc()
         self._create_igw()
@@ -59,14 +59,14 @@ class SharedVPC(ComponentResource):
             eip = aws.ec2.Eip(
                 f"{self.name}-nat-{az}",
                 domain="vpc",
-                tags=self.tags,
+                tags=self.tags_all,
                 opts=ResourceOptions(parent=self, depends_on=[self.vpc, subnet]),
             )
             nat_gw = aws.ec2.NatGateway(
                 f"{self.name}-nat-{az}",
                 allocation_id=eip.allocation_id,
                 subnet_id=subnet.id,
-                tags=self.tags,
+                tags=self.tags_all,
                 opts=ResourceOptions(parent=self, depends_on=[self.vpc, subnet]),
             )
             self.nat_gateways[az] = nat_gw
